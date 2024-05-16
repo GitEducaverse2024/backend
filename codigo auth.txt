@@ -1,0 +1,794 @@
+using MarksAssets.FirebaseWebGL.Auth;
+using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.UI;
+using Au = MarksAssets.FirebaseWebGL.Auth.Auth;
+
+/*
+ * == BEFORE YOU BEGIN ==
+ * Enable the Auth product, anonymous sign-in method, and google sign-in method on your firebase console or emulator.
+ * Make sure you cleared all the users (no users) for a clean state for testing.
+ * Make sure you have 'auth' set to true on the 'modules.jspre' file under Assets/MarksAssets/FirebaseWebGL/Plugins/Core.
+ * Leave your browser's javascript console (web inspector) open to check if there are any errors in the process.
+ * Now, follow https://firebase.google.com/docs/auth/web/anonymous-auth.
+ * 
+ * == OTHER OBSERVATIONS ==
+ * I merged 3 examples with one here. You sign in anonymously, but I convert
+ * the anonymous account to a permanent one with https://firebase.google.com/docs/auth/web/account-linking
+ * and also set the persistence beforehand with //https://firebase.google.com/docs/auth/web/auth-state-persistence
+ */
+namespace MarksAssets.FirebaseWebGL.Examples {
+    namespace Auth {
+
+        public class AnonymousAuthenticationLinkingPersistence : FirebaseExample {
+            public string persistence = "browserLocalPersistence";
+
+            async void Start() {
+                var auth = await CommonSetup.setup(firebaseConfig, emulatorConfig);
+                if (auth is null) return;
+
+                //https://firebase.google.com/docs/auth/web/auth-state-persistence
+                try {
+                    switch (persistence) {
+                        case "browserLocalPersistence": await Au.setPersistence(auth, Au.browserLocalPersistence); break;
+                        case "browserSessionPersistence": await Au.setPersistence(auth, Au.browserSessionPersistence); break;
+                        case "indexedDBLocalPersistence": await Au.setPersistence(auth, Au.indexedDBLocalPersistence); break;
+                        case "inMemoryPersistence": await Au.setPersistence(auth, Au.inMemoryPersistence); break;
+                    }
+                } catch(AuthError e) {
+                    Debug.LogError($"Could not set persistence - {e}");
+                }
+
+                Au.onAuthStateChanged(auth, user => {
+                    if (user is not null) {
+                        Debug.Log($"user {user.email} with uid {user.uid} signed in");
+                        // ...
+                    } else {
+                        Debug.Log("user signed out");
+                    }
+                });
+
+                try {
+                    var uc = await Au.signInAnonymously(auth);
+                    #pragma warning disable CS0618
+                    Application.ExternalEval($"alert('Anonymous user with uid {uc.user.uid} signed in.')");
+
+                    //https://firebase.google.com/docs/auth/web/account-linking#link-federated-auth-provider-credentials-to-a-user-account
+                    //See GoogleAuthenticationPopup.cs for the explanation of the setup below.
+                    var signInBtn = FindObjectOfType<Button>();
+                    signInBtn.GetComponent<Image>().raycastTarget = signInBtn.interactable = true;
+                    signInBtn.GetComponent<EventTrigger>().triggers[0].callback.AddListener(e => {//get pointerdown trigger and add listener
+                        Util.Util.runOnPointerDown(async () => {
+                            try {
+                                var provider = new GoogleAuthProvider();
+                                var userCred = await Au.linkWithPopup(uc.user, provider);
+                                signInBtn.GetComponent<Image>().raycastTarget = signInBtn.interactable = false;
+                                #pragma warning disable CS0618
+                                Application.ExternalEval($"alert('User with uid {uc.user.uid} linked with google.')");
+                            } catch (AuthError e) {
+                                Debug.LogError($"Auth Error - code: {e.code} - message: {e.Message} - email: {e.customData["email"]}");
+                                try {
+                                    Debug.Log($"credential from error: {GoogleAuthProvider.credentialFromError(e)}");
+                                } catch (AuthError e2) {
+                                    Debug.LogError($"Could not get credential from previous error: {e2}");
+                                }
+                            }
+                        });
+                    });
+                } catch(AuthError e) {
+                    Debug.LogError($"{e.code} - {e.Message}");
+                }
+            }
+
+        }
+    }
+}
+using MarksAssets.FirebaseWebGL.Auth;
+using UnityEngine;
+using UnityEngine.UI;
+using Au = MarksAssets.FirebaseWebGL.Auth.Auth;
+
+/*
+ * == BEFORE YOU BEGIN ==
+ * Enable the Auth product and email link sign-in method on your firebase console or emulator.
+ * Add 'localhost' to the list of Authorized domains.
+ * Make sure you cleared all the users (no users) for a clean state for testing.
+ * Make sure you have 'auth' set to true on the 'modules.jspre' file under Assets/MarksAssets/FirebaseWebGL/Plugins/Core.
+ * Leave your browser's javascript console (web inspector) open to check if there are any errors in the process.
+ * Now, follow https://firebase.google.com/docs/auth/web/email-link-auth .
+ * 
+ */
+namespace MarksAssets.FirebaseWebGL.Examples {
+    namespace Auth {
+
+        public class EmailLinkAuthentication : FirebaseExample {
+            async void Start() {
+                var auth = await CommonSetup.setup(firebaseConfig, emulatorConfig);
+                if (auth is null) return;
+
+                var sendLinkBtn = FindObjectOfType<Button>();
+                var emailInputField = FindObjectOfType<InputField>();
+
+                //https://firebase.google.com/docs/auth/web/email-link-auth#completing_sign-in_in_a_web_page
+                if (Au.isSignInWithEmailLink(auth, Application.absoluteURL)) {//it's the sign in url that was sent by the user.
+                    string email;
+                    if (PlayerPrefs.HasKey("emailForSignIn")) {//found the email stored in indexDb
+                        email = PlayerPrefs.GetString("emailForSignIn");
+                        sendLinkBtn.interactable = emailInputField.interactable = false;
+                        emailInputField.text = email;
+                        try {
+                            await Au.signInWithEmailLink(auth, emailInputField.text, Application.absoluteURL);
+                            #pragma warning disable CS0618
+                            Application.ExternalEval($"alert('{email} signed in')");
+                            await Au.signOut(auth);
+                        } catch (AuthError e) {
+                            Debug.LogError($"{e.code} - {e.Message}");
+                        } finally {//clean up
+                            PlayerPrefs.DeleteKey("emailForSignIn");
+                        }
+                    } else {//didn't find email. Maybe he opened the link on a different device? User will need to type email again...
+                        sendLinkBtn.GetComponentInChildren<Text>().text = "sign in";
+                        sendLinkBtn.onClick.AddListener(async () => {
+                            try {
+                                email = emailInputField.text;
+                                await Au.signInWithEmailLink(auth, email, Application.absoluteURL);
+                                Application.ExternalEval($"alert('{email} signed in')");
+                                await Au.signOut(auth);
+                            } catch (AuthError e) {
+                                Debug.LogError($"{e.code} - {e.Message}");
+                            } finally {//clean up
+                                PlayerPrefs.DeleteKey("emailForSignIn");
+                            }
+                        });
+                    }
+
+                } else {//it's not the sign in url. The user will send the link.
+                    //https://firebase.google.com/docs/auth/web/email-link-auth#send_an_authentication_link_to_the_users_email_address
+                    sendLinkBtn.GetComponentInChildren<Text>().text = "send link";
+
+                    var actionCodeSettings = new ActionCodeSettings() {
+                        url = Application.absoluteURL,//redirect to the same page
+                        handleCodeInApp = true
+                    };
+                    sendLinkBtn.onClick.AddListener(async () => {
+                        try {
+                            await Au.sendSignInLinkToEmail(auth, emailInputField.text, actionCodeSettings);
+                            PlayerPrefs.SetString("emailForSignIn", emailInputField.text);
+                            PlayerPrefs.Save();
+                            sendLinkBtn.interactable = false;
+                            Application.ExternalEval($"alert('Check email or emulator console for the sign in link.')");
+                        } catch (AuthError e) {
+                            Debug.LogError($"{e.code} - {e.Message}");
+                        }
+                    });
+                }
+
+            }
+
+        }
+    }
+}
+using MarksAssets.FirebaseWebGL.Auth;
+using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.UI;
+using Au = MarksAssets.FirebaseWebGL.Auth.Auth;
+
+/*
+ * == BEFORE YOU BEGIN ==
+ * Enable the Auth product and google sign-in method on your firebase console or emulator.
+ * Make sure you cleared all the users (no users) for a clean state for testing.
+ * Make sure you have 'auth' set to true on the 'modules.jspre' file under Assets/MarksAssets/FirebaseWebGL/Plugins/Core.
+ * Leave your browser's javascript console (web inspector) open to check if there are any errors in the process.
+ * Now, follow https://firebase.google.com/docs/auth/web/google-signin .
+ * 
+ * == OTHER OBSERVATIONS ==
+ * Please note, the logic is basically the same for the following
+ * https://firebase.google.com/docs/auth/web/facebook-login
+ * https://firebase.google.com/docs/auth/web/apple
+ * https://firebase.google.com/docs/auth/web/twitter-login
+ * https://firebase.google.com/docs/auth/web/github-auth
+ * https://firebase.google.com/docs/auth/web/microsoft-oauth
+ * https://firebase.google.com/docs/auth/web/yahoo-oauth
+ * https://firebase.google.com/docs/auth/web/saml
+ * https://firebase.google.com/docs/auth/web/openid-connect
+ * */
+namespace MarksAssets.FirebaseWebGL.Examples {
+    namespace Auth {
+
+        public class GoogleAuthenticationPopup : FirebaseExample {
+            async void Start() {
+                var auth = await CommonSetup.setup(firebaseConfig, emulatorConfig);
+                if (auth is null) return;
+
+                auth.languageCode = "it";
+                var provider = new GoogleAuthProvider();
+                provider.addScope("https://www.googleapis.com/auth/contacts.readonly");
+
+                provider.setCustomParameters(new CustomParameters() { ["login_hint"] = "user@example.com" } );
+
+                /* without running signInWithPopup on a pointerdown, the popup will likely get blocked by the browser.
+                 * You'd get 'Firebase: Error (auth/popup-blocked)' on your console.
+                 * You could instruct the user to configure the browser to allow popups for your app, but that's not
+                 * a good user experience (in my opinion). Instead, the browser doesn't block the popup if it detects that it's initiated
+                 * by a user action (button click). Hence, the pointerdown. The reason it has to be on a pointerdown
+                 * and not a normal click is best explained here https://forum.unity.com/threads/popup-blocker-and-pointerdown-pointerclick.383233/#post-2491032
+                 */
+
+                //await Au.signInWithPopup(auth, provider); //uncomment this line to call signInWithPopup without user action. It can work too by configuring the browser settings, but I don't recommend it. Then you could remove everything below.
+                var signInBtn = FindObjectOfType<Button>();
+                signInBtn.GetComponent<EventTrigger>().triggers[0].callback.AddListener(e => {//get pointerdown trigger and add listener
+                    Util.Util.runOnPointerDown(async () => {
+                        try {
+                            var userCred = await Au.signInWithPopup(auth, provider);
+                            Debug.Log("==USER CREDENTIAL==");
+                            Debug.Log(userCred);
+                            #pragma warning disable CS0618
+                            Application.ExternalEval($"alert('{userCred.user.email} signed in')");
+                        } catch (AuthError e) {
+                            Debug.LogError($"Auth Error - code: {e.code} - message: {e.Message} - email: {e.customData["email"]}");
+                            try {
+                                Debug.Log($"credential from error: {GoogleAuthProvider.credentialFromError(e)}");
+                            } catch (AuthError e2) {
+                                Debug.LogError($"Could not get credential from previous error: {e2}");
+                            }
+                        }
+                    });
+                });
+            }
+
+        }
+    }
+}
+using MarksAssets.FirebaseWebGL.Auth;
+using UnityEngine;
+using Au = MarksAssets.FirebaseWebGL.Auth.Auth;
+
+/*
+ * == BEFORE YOU BEGIN ==
+ * Enable the Auth product and google sign-in method on your firebase console or emulator.
+ * Make sure you cleared all the users (no users) for a clean state for testing.
+ * Make sure you have 'auth' set to true on the 'modules.jspre' file under Assets/MarksAssets/FirebaseWebGL/Plugins/Core.
+ * Leave your browser's javascript console (web inspector) open to check if there are any errors in the process.
+ * Now, follow https://firebase.google.com/docs/auth/web/google-signin .
+ * In theory, this example should work with the emulator, but I couldn't make it work with it. So I recommend that you don't use it. More info below.
+ * 
+ * == OTHER OBSERVATIONS ==
+ * Please note, the logic is basically the same for the following
+ * https://firebase.google.com/docs/auth/web/facebook-login
+ * https://firebase.google.com/docs/auth/web/apple
+ * https://firebase.google.com/docs/auth/web/twitter-login
+ * https://firebase.google.com/docs/auth/web/github-auth
+ * https://firebase.google.com/docs/auth/web/microsoft-oauth
+ * https://firebase.google.com/docs/auth/web/yahoo-oauth
+ * https://firebase.google.com/docs/auth/web/saml
+ * https://firebase.google.com/docs/auth/web/openid-connect
+ * On this example it tries to get the redirect result first, and if it fails it attempts to sign in with redirect.
+ * If you are caught in an infinite loop, that's because the redirect result is always returning null. To fix this do the following:
+ * Use firebase hosting https://firebase.google.com/docs/hosting/quickstart and the generated https://xxxxxx-xxxxx.firebaseapp.com/ (not web.app) website. 
+ * Check https://firebase.google.com/docs/auth/web/redirect-best-practices for more details.
+ * The emulator issue is basically that I can't make getRedirectResult work with it, period. 
+ * See https://github.com/firebase/firebase-js-sdk/issues/7916 and https://github.com/firebase/firebase-tools/issues/6341 for more details.
+ * Maybe you'll have better luck if you try...but don't blame if it doesn't work!
+ */
+
+//Second, 
+
+namespace MarksAssets.FirebaseWebGL.Examples {
+    namespace Auth {
+
+        public class GoogleAuthenticationRedirect : FirebaseExample {
+            async void Start() {
+                var auth = await CommonSetup.setup(firebaseConfig, emulatorConfig);
+                if (auth is null) return;
+
+                auth.languageCode = "it";
+                var provider = new GoogleAuthProvider();
+                provider.addScope("https://www.googleapis.com/auth/contacts.readonly");
+
+                provider.setCustomParameters(new CustomParameters() { ["login_hint"] = "user@example.com" } );
+
+                try {
+                    var result = await Au.getRedirectResult(auth);
+                    if (result is null) {
+                        Debug.Log("user credential is null. Attempting to sign in with redirect...");
+                        await Au.signInWithRedirect(auth, provider);
+                    }
+
+                    #pragma warning disable CS0618
+                    Application.ExternalEval($"alert('{result.user.email} signed in')");
+
+                    Debug.Log("==USER CREDENTIAL==");
+                    Debug.Log(result);
+                    // This gives you a Google Access Token. You can use it to access Google APIs.
+                    var credential = GoogleAuthProvider.credentialFromResult(result);
+                    Debug.Log("==OAUTH CREDENTIAL==");
+                    Debug.Log(credential);
+                    var token = credential.accessToken;
+                    Debug.Log("==ACCESS TOKEN==");
+                    Debug.Log(token);
+
+                    // The signed-in user info.
+                    var user = result.user;
+                    Debug.Log("==USER==");
+                    Debug.Log(user);
+
+                } catch(AuthError e) {
+                    Debug.LogError($"Auth Error - code: {e.code} - message: {e.Message} - email: {e.customData["email"]}");
+                }
+            }
+
+        }
+    }
+}
+using MarksAssets.FirebaseWebGL.Auth;
+using UnityEngine;
+using Au = MarksAssets.FirebaseWebGL.Auth.Auth;
+
+/*
+ * == BEFORE YOU BEGIN ==
+ * Enable the Auth product and email sign-in method on your firebase console or emulator.
+ * Make sure you cleared all the users (no users) for a clean state for testing.
+ * Make sure you have 'auth' set to true on the 'modules.jspre' file under Assets/MarksAssets/FirebaseWebGL/Plugins/Core.
+ * Leave your browser's javascript console (web inspector) open to check if there are any errors in the process.
+ * Now, follow https://firebase.google.com/docs/auth/web/password-auth .
+ * 
+ */
+namespace MarksAssets.FirebaseWebGL.Examples {
+    namespace Auth {
+
+        public class PasswordAuthentication : FirebaseExample {
+            async void Start() {
+                var auth = await CommonSetup.setup(firebaseConfig, emulatorConfig);
+                if (auth is null) return;
+
+                //https://firebase.google.com/docs/auth/web/start#set_an_authentication_state_observer_and_get_user_data
+                Au.onAuthStateChanged(auth, user => {
+                    if (user is not null) {
+                        Debug.Log($"user {user.email} with uid {user.uid} signed in");
+                        // ...
+                    } else {
+                        Debug.Log("user signed out");
+                    }
+                });
+
+
+                try {
+                    await Au.createUserWithEmailAndPassword(auth, "mytestemail@testprovider.com", "123456");
+                    await Au.signInWithEmailAndPassword(auth, "mytestemail@testprovider.com", "123456");
+                    await Au.signOut(auth);
+                } catch(AuthError e) {
+                    Debug.LogError($"{e.code} - {e.Message}");
+                }
+            }
+
+        }
+    }
+}
+using MarksAssets.FirebaseWebGL.Auth;
+using UnityEngine;
+using UnityEngine.UI;
+using Au = MarksAssets.FirebaseWebGL.Auth.Auth;
+
+/*  == BEFORE YOU BEGIN ==
+ * Enable the Auth product and Phone sign-in method on your Firebase Console or emulator.
+ * To use recaptcha,you have to use the widget mode https://firebase.google.com/docs/auth/web/phone-auth#use-the-recaptcha-widget
+ * Which means, on the index.html of your build folder or custom webgl template, you have to add the following div
+ * <div id="recaptcha-container" style="z-index: 1; position: absolute; "></div>
+ * Make sure you cleared all the users (no users) for a clean state for testing.
+ * Make sure you have 'auth' set to true on the 'modules.jspre' file under Assets/MarksAssets/FirebaseWebGL/Plugins/Core.
+ * Leave your browser's javascript console (web inspector) open to check if there are any errors in the process.
+ * Now, follow https://firebase.google.com/docs/auth/web/phone-auth .
+ * This example has PARTIAL emulator support. I recommend that you don't use it at all. Instead, I recommend using phone numbers for testing. See https://firebase.google.com/docs/auth/web/phone-auth#create-fictional-phone-numbers-and-verification-codes
+ * More info about the emulator issues and other observations below.
+ * 
+ * == OTHER OBSERVATIONS ==
+ * If you want to make the recaptcha invisible, setting the size to "invisible" as described here https://firebase.google.com/docs/auth/web/phone-auth#use-invisible-recaptcha
+ * only hides the "I'm not a robot" text. See https://developers.google.com/recaptcha/docs/versions#recaptcha_v2_invisible_recaptcha_badge. 
+ * To actually make it invisible, you have to set the recaptcha size to "invisible" AND use the following div instead of the aforementioned one.
+ * <div id="recaptcha-container" style="z-index: 1; position: absolute; visibility: hidden;"></div>
+ * If you don't want to make it invisible and you are not happy with the position it shows up, you can style the div yourself.
+ * To style the div yourself, just make sure badge is set to "inline" and then apply your own CSS to the div. Example <div id="recaptcha-container" style="z-index: 1; position: absolute; top: 50%; left: 50% "></div>
+ * Note that if you set the size to "invisible" you can use the badge property that
+ * has a few alignment options out of the box that may work for you https://developers.google.com/recaptcha/docs/invisible#render_param, so you wouldn't have to style your own div.
+ * Please note that when using the emulator, recaptcha is disabled and always resolves https://firebase.google.com/docs/emulator-suite/connect_auth#emulated_phonesms_authentication
+ * Also, there's a bug with the emulator where you can't call signInWithPhoneNumber more than once even if you type an invalid number. See https://github.com/firebase/firebase-js-sdk/issues/7646
+ * If you use this example with the emulator, it will seem that the example is bugged as all input fields and buttons will become grayed out after the first try or if you type an invalid
+ * phone number, the confirmation code field and button will never become enabled. So the emulator works ONLY on the first try, and ONLY if you don't fill in an invalid phone number by mistake.
+*/
+namespace MarksAssets.FirebaseWebGL.Examples {
+    namespace Auth {
+
+        public class PhoneAuthentication : FirebaseExample {
+            public InputField phoneNumber, verificationCode;
+            public Button confirmPhoneNumber, confirmVerificationCode;
+            public string recaptchaSize = "invisible";//possible values are "compact", "normal" and "invisible"
+            public string recaptchaBadge = "bottomright";//possible values https://developers.google.com/recaptcha/docs/invisible#render_param . Badge only applies if size is set to "invisible"
+            public string recaptchaTheme = "light";//possible values https://developers.google.com/recaptcha/docs/display#render_param
+
+            private RecaptchaVerifier applicationVerifier = null;
+
+            async void Start() {
+                var auth = await CommonSetup.setup(firebaseConfig, emulatorConfig);
+                if (auth is null) return;
+
+                
+                applicationVerifier = null;
+                try {//in practice you don't have to try catch the RecaptchaVerifier if you set up everything correctly.
+                    applicationVerifier = new RecaptchaVerifier(auth, "recaptcha-container", new RecaptchaParameters() {
+                        size = recaptchaSize,
+                        callback = token => Debug.Log(token),
+                        expiredCallback = () => Debug.Log("recaptcha expired"),//Never triggers. See https://github.com/firebase/firebase-js-sdk/issues/7631
+                        errorCallback = async () => await applicationVerifier.verify(),//error(probably internet connection), try again!
+                        badge = recaptchaBadge,
+                        theme = recaptchaTheme
+                    });
+                } catch(AuthError e) {
+                    if (e.code == AuthErrorCodes.ARGUMENT_ERROR) {
+                        Debug.LogError("failed to get recaptcha verifier. Did you add the div to the index.html of your build?");
+                        #pragma warning disable CS0618
+                        Application.ExternalEval($"alert('Did not find recaptcha container div on html build')");
+                    }
+                    return;
+                }
+
+                var token = await applicationVerifier.verify();
+                Debug.Log("application verified");
+                ConfirmationResult confirmationResult = null;
+
+                confirmPhoneNumber.onClick.AddListener(async () => {
+                    try {
+                        confirmPhoneNumber.interactable = phoneNumber.interactable = false;
+                        confirmationResult = await Au.signInWithPhoneNumber(auth, phoneNumber.text, applicationVerifier);
+                        verificationCode.interactable = confirmVerificationCode.interactable = true;
+                    } catch(AuthError e) {
+                        confirmPhoneNumber.interactable = phoneNumber.interactable = true;
+                        Debug.LogError($"failed to sign in with phone number: {e}");
+                    }
+                });
+
+                confirmVerificationCode.onClick.AddListener(async () => {
+                    try {
+                        verificationCode.interactable = confirmVerificationCode.interactable = false;
+                        var userCredential = await confirmationResult.confirm(verificationCode.text);
+                        confirmPhoneNumber.interactable = phoneNumber.interactable = true;
+                        #pragma warning disable CS0618
+                        Application.ExternalEval($"alert('{userCredential.user.phoneNumber} signed in')");
+                    } catch(AuthError e) {
+                        verificationCode.interactable = confirmVerificationCode.interactable = true;
+                        Debug.LogError($"Failed to get user credential: {e}");
+                    }
+                });
+
+            }
+
+            private void OnDestroy() {
+                //After you're done with the application verifier, you should clear it at some point.
+                applicationVerifier.clear();
+            }
+
+        }
+    }
+}
+using System;
+using MarksAssets.FirebaseWebGL.Auth;
+using UnityEngine;
+using UnityEngine.UI;
+using Au = MarksAssets.FirebaseWebGL.Auth.Auth;
+
+/*  == BEFORE YOU BEGIN ==
+ * Enable the Auth product, Email sign-in method, Phone sign-in method, and SMS Multi-factor Authentication on your Firebase Console or emulator.
+ * To use recaptcha,you have to use the widget mode https://firebase.google.com/docs/auth/web/phone-auth#use-the-recaptcha-widget
+ * Which means, on the index.html of your build folder or custom webgl template, you have to add the following div
+ * <div id="recaptcha-container" style="z-index: 1; position: absolute; "></div>
+ * Make sure you cleared all the users (no users) for a clean state for testing.
+ * Make sure you have 'auth' set to true on the 'modules.jspre' file under Assets/MarksAssets/FirebaseWebGL/Plugins/Core.
+ * Leave your browser's javascript console (web inspector) open to check if there are any errors in the process.
+ * Now, follow https://firebase.google.com/docs/auth/web/multi-factor .
+ * This example has PARTIAL emulator support. I recommend that you don't use it at all. More info below.
+ * 
+ * == OTHER OBSERVATIONS ==
+/* Please check PhoneAuthentication.cs file for more details about recaptcha, recommendations, and emulator issues. Everything applies here.
+ * I implemented multifactor auth with email and phone on this example. First, you have to create a user with an email, and you will have to verify it.
+ * I recommend using https://temp-mail.org/en/ for temporary emails. Then, you will enter the phone number. Finally, enter the verification code.
+ * At this point, if everything went well, your user was created and enrolled with multifactor. Right after, the user is signed out, and you can sign in.
+ * The create user button will have a new text, 'sign in'.
+ * The steps are the same, but instead of enrolling, you will sign in the user.
+ * 
+ * If you are using the emulator, don't verify the email manually, open the link that you will receive from the console window that you are running the emulator on. See https://github.com/firebase/firebase-js-sdk/issues/7917.
+ * To summarize emulator issues with this example, see https://github.com/firebase/firebase-js-sdk/issues/7646#issuecomment-1874320898 and https://github.com/firebase/firebase-js-sdk/issues/7917.
+ * The sign in step will not work with the emulator, after you tap on 'verify phone', the confirm code button and input will not enable, because verifyPhoneNumber at this point is called twice.
+*/
+namespace MarksAssets.FirebaseWebGL.Examples {
+    namespace Auth {
+
+        public class SMSMultiFactorAuthentication : FirebaseExample {
+            public InputField phoneNumber, verificationCode, email;
+            public Button confirmPhoneNumber, confirmVerificationCode, createUser;
+            public GameObject verifyEmail;
+            public string recaptchaSize = "invisible";//possible values are "compact", "normal" and "invisible"
+            public string recaptchaBadge = "bottomright";//possible values https://developers.google.com/recaptcha/docs/invisible#render_param . Badge only applies if size is set to "invisible"
+            public string recaptchaTheme = "light";//possible values https://developers.google.com/recaptcha/docs/display#render_param
+
+            private RecaptchaVerifier applicationVerifier = null;
+            private MultiFactorSession multiFactorSession = null;
+            private MultiFactorResolver resolver = null;
+            private User user = null;
+
+            async void Start() {
+                var auth = await CommonSetup.setup(firebaseConfig, emulatorConfig);
+                if (auth is null) return;
+                
+                PhoneAuthProvider phoneAuthProvider = new PhoneAuthProvider(auth);
+
+                applicationVerifier = null;
+                try {//in practice you don't have to try catch the RecaptchaVerifier if you set up everything correctly.
+                    applicationVerifier = new RecaptchaVerifier(auth, "recaptcha-container", new RecaptchaParameters() {
+                        size = recaptchaSize,
+                        callback = token => Debug.Log(token),
+                        expiredCallback = () => Debug.Log("recaptcha expired"),//Never triggers. See https://github.com/firebase/firebase-js-sdk/issues/7631
+                        errorCallback = async () => await applicationVerifier.verify(),//error(probably internet connection), try again!
+                        badge = recaptchaBadge,
+                        theme = recaptchaTheme
+                    });
+                } catch(AuthError e) {
+                    if (e.code == AuthErrorCodes.ARGUMENT_ERROR) {
+                        Debug.LogError("failed to get recaptcha verifier. Did you add the div to the index.html of your build?");
+                        #pragma warning disable CS0618
+                        Application.ExternalEval($"alert('Did not find recaptcha container div on html build')");
+                    } else {
+                        Debug.LogError($"failed to get recaptcha verifier: {e}");
+                    }
+                    return;
+                }
+
+                var token = await applicationVerifier.verify();
+                Debug.Log("application verified");
+
+                createUser.onClick.AddListener(async () => {
+                    createUser.interactable = email.interactable = false;
+
+                    if (user is null) {
+                        try {
+                            var userCredential = await Au.createUserWithEmailAndPassword(auth, $"{email.text}", "123456");
+                            user = userCredential.user;
+                            try {
+                                verifyEmail.SetActive(true);
+                                await Au.sendEmailVerification(user);
+                            } catch (AuthError e) {
+                                Debug.LogError($"could not send email verification: {e}");
+                                return;
+                            }
+                        } catch (AuthError e) {
+                            createUser.interactable = email.interactable = true;
+                            Debug.LogError($"could not sign in: {e}");
+                        }
+                    } else {//already enrolled
+                        try {
+                            var userCredential = await Au.signInWithEmailAndPassword(auth, $"{email.text}", "123456");
+                        } catch(AuthError e) {
+                            if (e.code == AuthErrorCodes.MFA_REQUIRED) {
+                                resolver = Au.getMultiFactorResolver(auth, e);
+                                confirmPhoneNumber.interactable = phoneNumber.interactable = true;
+                                Debug.Log("got resolver");
+                            } else {
+                                createUser.interactable = true;
+                                Debug.LogError($"could not sign in: {e}");
+                            }
+                        }
+                    }
+
+                    
+                });
+
+                string verificationId = null;
+                confirmPhoneNumber.onClick.AddListener(async () => {
+                    try {
+                        confirmPhoneNumber.interactable = phoneNumber.interactable = false;
+                        if (resolver is null) {//enrollment
+                            verificationId = await phoneAuthProvider.verifyPhoneNumber(new PhoneMultiFactorEnrollInfoOptions() { phoneNumber = phoneNumber.text, session = multiFactorSession }, applicationVerifier);
+                        } else {//sign in
+                            verificationId = await phoneAuthProvider.verifyPhoneNumber(new PhoneMultiFactorSignInInfoOptions() { multiFactorHint = resolver.hints[0], session = resolver.session }, applicationVerifier);
+                        }
+
+                        verificationCode.interactable = confirmVerificationCode.interactable = true;
+                    } catch (AuthError e) {
+                        confirmPhoneNumber.interactable = phoneNumber.interactable = true;
+                        Debug.LogError($"failed to sign in with phone number: {e}");
+                    }
+                });
+
+                confirmVerificationCode.onClick.AddListener(async () => {
+                    try {
+                        verificationCode.interactable = confirmVerificationCode.interactable = false;
+
+                        var cred = PhoneAuthProvider.credential(verificationId, verificationCode.text);
+                        var multiFactorAssertion = PhoneMultiFactorGenerator.assertion(cred);
+
+                        if (resolver is null) {//enroll
+                            await Au.multiFactor(user).enroll(multiFactorAssertion, "multifactorUser");
+                            //don't want to clear the user reference on this specific case, since I want to sign in right after and it would throw 'User not found' error in the update method when checking if the email is verified.
+                            //Usually, you'd leave autoClear set to true as explained in the docs.
+                            await Au.signOut(auth, false);
+                            #pragma warning disable CS0618
+                            Application.ExternalEval($"alert('enrolled {email.text} with phone number and signed out.')");
+                            createUser.GetComponentInChildren<Text>().text = "sign in";
+                            createUser.interactable = true;
+                        } else {//sign in
+                            var uc = await resolver.resolveSignIn(multiFactorAssertion);
+                            #pragma warning disable CS0618
+                            Application.ExternalEval($"alert('user {email.text} signed in with multifactor.')");
+                        }
+
+
+                    } catch(AuthError e) {
+                        verificationCode.interactable = confirmVerificationCode.interactable = true;
+                        Debug.LogError($"Failed to get user credential: {e}");
+                    }
+                });
+
+            }
+
+            private void OnDestroy() {
+                //After you're done with the application verifier, you should clear it at some point.
+                applicationVerifier.clear();
+            }
+
+            private void Update() {
+                if (user?.emailVerified is true && verifyEmail.activeSelf is true) {
+                    verifyEmail.SetActive(false);
+                    ((Action)(async () => {
+                        try {
+                            multiFactorSession = await Au.multiFactor(user).getSession();
+                            confirmPhoneNumber.interactable = phoneNumber.interactable = true;
+                        } catch (AuthError e) {
+                            Debug.LogError($"Could not get multifactor session: {e}");
+                            return;
+                        }
+                    }))();
+                    
+                } else if (user?.emailVerified is false) {//email not verified
+                    user?.reload();//reload user to check again.
+                }
+            }
+
+        }
+    }
+}
+using System;
+using MarksAssets.FirebaseWebGL.Auth;
+using UnityEngine;
+using UnityEngine.UI;
+using Au = MarksAssets.FirebaseWebGL.Auth.Auth;
+
+/*
+ * == BEFORE YOU BEGIN ==
+ * Enable the Auth product and email sign-in method on your firebase console. Then, enable totp on your project using firebase admin.
+ * Make sure you cleared all the users (no users) for a clean state for testing.
+ * Make sure you have 'auth' set to true on the 'modules.jspre' file under Assets/MarksAssets/FirebaseWebGL/Plugins/Core.
+ * Leave your browser's javascript console (web inspector) open to check if there are any errors in the process.
+ * Now, follow https://firebase.google.com/docs/auth/web/totp-mfa .
+ * This example does NOT support the emulator! See https://github.com/firebase/firebase-tools/issues/6224
+ * 
+ * == OTHER OBSERVATIONS ==
+/* I implemented multifactor auth with email and totp on this example. First, you have to create a user with an email, and you will have to verify it.
+ * I recommend using https://temp-mail.org/en/ for temporary emails. Then, your secret key will show up. I recommend using
+ * https://dan.hersam.com/tools/gen-qr-code.php to generate a qr code for quick testing with the Google Authenticator app https://play.google.com/store/apps/details?id=com.google.android.apps.authenticator2 .
+ * At this point, if everything went well, your user was created and enrolled with multifactor. Right after, the user is signed out, and you can sign in.
+ * The create user button will have a new text, 'sign in'.
+ * The steps are the same, but instead of enrolling, you will sign in the user.
+ * 
+*/
+namespace MarksAssets.FirebaseWebGL.Examples {
+    namespace Auth {
+
+        public class TOTPMultiFactorAuthentication : FirebaseExample {
+            public InputField verificationCode, email;
+            public Button confirmVerificationCode, createUser;
+            public GameObject verifyEmail;
+
+            private MultiFactorSession multiFactorSession = null;
+            private MultiFactorResolver resolver = null;
+            private User user = null;
+            private TotpSecret totpSecret = null;
+
+            async void Start() {
+                var auth = await CommonSetup.setup(firebaseConfig, emulatorConfig);
+                if (auth is null) return;
+                
+              
+                createUser.onClick.AddListener(async () => {
+                    createUser.interactable = email.interactable = false;
+
+                    if (user is null) {
+                        try {
+                            var userCredential = await Au.createUserWithEmailAndPassword(auth, $"{email.text}", "123456");
+                            user = userCredential.user;
+                            try {
+                                verifyEmail.SetActive(true);
+                                await Au.sendEmailVerification(user);
+                            } catch (AuthError e) {
+                                Debug.LogError($"could not send email verification: {e}");
+                                return;
+                            }
+                        } catch (AuthError e) {
+                            createUser.interactable = email.interactable = true;
+                            Debug.LogError($"could not sign in: {e}");
+                        }
+                    } else {//already enrolled
+                        try {
+                            var userCredential = await Au.signInWithEmailAndPassword(auth, $"{email.text}", "123456");
+                        } catch(AuthError e) {
+                            if (e.code == AuthErrorCodes.MFA_REQUIRED) {
+                                resolver = Au.getMultiFactorResolver(auth, e);
+                                verificationCode.interactable = confirmVerificationCode.interactable = true;
+                                Debug.Log("got resolver");
+                            } else {
+                                createUser.interactable = true;
+                                Debug.LogError($"could not sign in: {e}");
+                            }
+                        }
+                    }
+                    
+                });
+
+
+                confirmVerificationCode.onClick.AddListener(async () => {
+                    try {
+                        verificationCode.interactable = confirmVerificationCode.interactable = false;
+
+                        if (resolver is null) {//enroll
+                            var multiFactorAssertion = TotpMultiFactorGenerator.assertionForEnrollment(totpSecret, verificationCode.text);
+                            await Au.multiFactor(user).enroll(multiFactorAssertion, "multifactorUser");
+                            //don't want to clear the user reference on this specific case, since I want to sign in right after and it would throw 'User not found' error in the update method when checking if the email is verified.
+                            //Usually, you'd leave autoClear set to true as explained in the docs.
+                            await Au.signOut(auth, false);
+                            #pragma warning disable CS0618
+                            Application.ExternalEval($"alert('enrolled {email.text} with totp and signed out.')");
+                            createUser.GetComponentInChildren<Text>().text = "sign in";
+                            createUser.interactable = true;
+                        } else {//sign in
+                            var multiFactorAssertion = TotpMultiFactorGenerator.assertionForSignIn(resolver.hints[0].uid, verificationCode.text);
+                            var uc = await resolver.resolveSignIn(multiFactorAssertion);
+                            #pragma warning disable CS0618
+                            Application.ExternalEval($"alert('user {email.text} signed in with totp.')");
+                        }
+
+                    } catch(AuthError e) {
+                        verificationCode.interactable = confirmVerificationCode.interactable = true;
+                        Debug.LogError($"Failed to get user credential: {e}");
+                    }
+                });
+
+            }
+
+
+            private void Update() {
+                if (user?.emailVerified is true && verifyEmail.activeSelf is true) {
+                    verifyEmail.SetActive(false);
+                    ((Action)(async () => {
+                        try {
+                            multiFactorSession = await Au.multiFactor(user).getSession();
+                            if (resolver is null) {//enrollment
+                                totpSecret = await TotpMultiFactorGenerator.generateSecret(multiFactorSession);
+                                var secret = totpSecret.secretKey;
+                                Debug.Log("==secret==");
+                                Debug.Log(secret);
+                                #pragma warning disable CS0618
+                                Application.ExternalEval($"alert('secret {secret}')");
+                                verificationCode.interactable = confirmVerificationCode.interactable = true;
+                            }
+                        } catch (AuthError e) {
+                            Debug.LogError($"Could not get multifactor session: {e}");
+                            return;
+                        }
+                    }))();
+                    
+                } else if (user?.emailVerified is false) {//email not verified
+                    user?.reload();//reload user to check again.
+                }
+            }
+
+        }
+    }
+}
