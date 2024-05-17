@@ -12,10 +12,10 @@ var Module=typeof unityFramework!="undefined"?unityFramework:{};var readyPromise
 		window["FirebaseWebGL"] = {
 			root: `https://www.gstatic.com/firebasejs/${currentVersion}`,
 			enableProducts : {
-				analytics:     false,
+				analytics:     true,
 				appCheck:      false,
 				auth:	       true,
-				database:      false,
+				database:      true,
 				firestore:     true,
 				firestoreLite: false,
 				functions:     false,
